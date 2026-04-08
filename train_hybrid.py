@@ -18,6 +18,16 @@ import torch
 import torch.optim
 from utils.random_seed import setup_seed
 from utils.checkpoint import load_local_checkpoint
+from utils.tensorboard import (
+    add_tensorboard_args,
+    compute_global_norm,
+    create_tensorboard_writer,
+    log_learning_rates,
+    log_mask_stats,
+    log_parameter_histograms,
+    log_preview_batch,
+    log_scalars,
+)
 from IMFuse_hybrid import IMFuseHybrid
 from data.transforms import *
 from data.datasets_nii import Brats_loadall_nii, Brats_loadall_test_nii, Brats_loadall_val_nii
@@ -66,6 +76,7 @@ parser.add_argument('--stage_resume', default=None, type=str, help='当前阶段
 
 # 验证频率
 parser.add_argument('--val_interval', default=10, type=int, help='验证间隔 (epochs)')
+add_tensorboard_args(parser)
 
 path = os.path.dirname(__file__)
 
@@ -545,6 +556,25 @@ def main():
     logging.info(f'############# Stage {stage} Training ############')
     iter_per_epoch = len(train_loader)
     train_iter = iter(train_loader)
+    writer = create_tensorboard_writer(
+        args,
+        run_name=wandb_name,
+        subdir=f'stage{stage}',
+        purge_step=start_epoch * iter_per_epoch if start_epoch > 0 else None,
+    )
+
+    if writer is not None:
+        meta_scalars = {
+            f'stage{stage}/meta/stage': stage,
+            f'stage{stage}/meta/start_epoch': start_epoch,
+            f'stage{stage}/meta/trainable_parameters': total_trainable,
+            f'stage{stage}/meta/frozen_parameters': total_frozen,
+        }
+        log_scalars(writer, meta_scalars, 0)
+        for group_index, param_group in enumerate(param_groups):
+            group_size = sum(parameter.numel() for parameter in param_group['params'])
+            writer.add_scalar(f'stage{stage}/meta/param_group_{group_index}_size', group_size, 0)
+            writer.add_scalar(f'stage{stage}/meta/param_group_{group_index}_base_lr', float(param_group['lr']), 0)
 
     for epoch in range(start_epoch, stage_epochs):
         step_lr = lr_schedule(optimizer, epoch)
@@ -561,12 +591,15 @@ def main():
         loss_epoch = 0.0
 
         for i in range(iter_per_epoch):
+            iter_start = time.time()
             step = (i + 1) + epoch * iter_per_epoch
+            data_start = time.time()
             try:
                 data = next(train_iter)
             except StopIteration:
                 train_iter = iter(train_loader)
                 data = next(train_iter)
+            data_time = time.time() - data_start
             x, target, mask = data[:3]
             x = x.cuda(non_blocking=True)
             target = target.cuda(non_blocking=True)
@@ -612,6 +645,39 @@ def main():
             loss.backward()
             optimizer.step()
 
+            batch_time = time.time() - iter_start
+
+            if writer is not None and (step == 1 or step % args.tb_log_interval == 0):
+                grad_norm = compute_global_norm(model.parameters(), use_grad=True)
+                log_scalars(
+                    writer,
+                    {
+                        f'stage{stage}/train_step/loss': loss.item(),
+                        f'stage{stage}/train_step/fuse_cross_loss': fuse_cross_loss.item(),
+                        f'stage{stage}/train_step/fuse_dice_loss': fuse_dice_loss.item(),
+                        f'stage{stage}/train_step/sep_cross_loss': sep_cross_loss.item(),
+                        f'stage{stage}/train_step/sep_dice_loss': sep_dice_loss.item(),
+                        f'stage{stage}/train_step/prm_cross_loss': prm_cross_loss.item(),
+                        f'stage{stage}/train_step/prm_dice_loss': prm_dice_loss.item(),
+                        f'stage{stage}/train_step/grad_norm': grad_norm,
+                        f'stage{stage}/time/batch_seconds': batch_time,
+                        f'stage{stage}/time/data_seconds': data_time,
+                    },
+                    step,
+                )
+                log_learning_rates(writer, optimizer, step, prefix=f'stage{stage}/lr')
+                log_mask_stats(writer, mask, step, prefix=f'stage{stage}/train_step/mask')
+
+                if args.tb_image_interval > 0 and (step == 1 or step % args.tb_image_interval == 0):
+                    log_preview_batch(
+                        writer,
+                        tag=f'stage{stage}/train_preview',
+                        inputs=x,
+                        target=target,
+                        prediction=fuse_pred,
+                        step=step,
+                    )
+
             msg = 'Stage {}, Epoch {}/{}, Iter {}/{}, Loss {:.4f}, '.format(
                 stage, (epoch + 1), stage_epochs, (i + 1), iter_per_epoch, loss.item()
             )
@@ -634,6 +700,31 @@ def main():
             f"stage{stage}/prmdice": prm_dice_loss_epoch.cpu().detach().item() / iter_per_epoch,
             f"stage{stage}/learning_rate": step_lr,
         })
+
+        if writer is not None:
+            epoch_scalars = {
+                f'stage{stage}/train_epoch/loss': loss_epoch.cpu().detach().item() / iter_per_epoch,
+                f'stage{stage}/train_epoch/fuse_cross_loss': fuse_cross_loss_epoch.cpu().detach().item() / iter_per_epoch,
+                f'stage{stage}/train_epoch/fuse_dice_loss': fuse_dice_loss_epoch.cpu().detach().item() / iter_per_epoch,
+                f'stage{stage}/train_epoch/sep_cross_loss': sep_cross_loss_epoch.cpu().detach().item() / iter_per_epoch,
+                f'stage{stage}/train_epoch/sep_dice_loss': sep_dice_loss_epoch.cpu().detach().item() / iter_per_epoch,
+                f'stage{stage}/train_epoch/prm_cross_loss': prm_cross_loss_epoch.cpu().detach().item() / iter_per_epoch,
+                f'stage{stage}/train_epoch/prm_dice_loss': prm_dice_loss_epoch.cpu().detach().item() / iter_per_epoch,
+                f'stage{stage}/train_epoch/learning_rate': step_lr,
+                f'stage{stage}/time/epoch_seconds': time.time() - b,
+            }
+            if val_Dice_best > -999999:
+                epoch_scalars[f'stage{stage}/meta/best_val_dice'] = val_Dice_best
+            log_scalars(writer, epoch_scalars, epoch + 1)
+
+            if args.tb_histogram_interval > 0 and (epoch + 1) % args.tb_histogram_interval == 0:
+                log_parameter_histograms(
+                    writer,
+                    model,
+                    epoch + 1,
+                    max_parameters=args.tb_histogram_limit,
+                    prefix=f'stage{stage}',
+                )
 
         # Save last checkpoint
         file_name = os.path.join(ckpts, f'stage{stage}_last.pth')
@@ -667,6 +758,19 @@ def main():
                 f"stage{stage}/val_TC": val_TC.item(),
                 f"stage{stage}/val_Dice": val_dice.item(),
             })
+            if writer is not None:
+                log_scalars(
+                    writer,
+                    {
+                        f'stage{stage}/val/WT': val_WT.item(),
+                        f'stage{stage}/val/TC': val_TC.item(),
+                        f'stage{stage}/val/ET': val_ET.item(),
+                        f'stage{stage}/val/ETpp': val_ETpp.item(),
+                        f'stage{stage}/val/Dice': val_dice.item(),
+                        f'stage{stage}/val/seg_loss': seg_loss.cpu().item(),
+                    },
+                    epoch + 1,
+                )
 
             if val_dice > val_Dice_best:
                 val_Dice_best = val_dice.item()
@@ -698,6 +802,20 @@ def main():
                 f"stage{stage}/test_ET": test_ET.item(),
                 f"stage{stage}/test_ETpp": test_ETpp.item(),
             })
+            if writer is not None:
+                test_dice = (test_ET + test_WT + test_TC) / 3
+                log_scalars(
+                    writer,
+                    {
+                        f'stage{stage}/test/WT': test_WT.item(),
+                        f'stage{stage}/test/TC': test_TC.item(),
+                        f'stage{stage}/test/ET': test_ET.item(),
+                        f'stage{stage}/test/ETpp': test_ETpp.item(),
+                        f'stage{stage}/test/Dice': test_dice.item(),
+                        f'stage{stage}/test/seg_loss': seg_loss.cpu().item(),
+                    },
+                    epoch + 1,
+                )
 
             model.train()
             model.module.is_training = True
@@ -714,6 +832,8 @@ def main():
 
     msg = 'Stage {} completed. Total time: {:.4f} hours'.format(stage, (time.time() - start) / 3600)
     logging.info(msg)
+    if writer is not None:
+        writer.close()
     print(msg)
 
 
