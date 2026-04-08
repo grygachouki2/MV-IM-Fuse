@@ -18,6 +18,23 @@ join = os.path.join
 import pandas as pd
 import random
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _resolve_split_file(file_name):
+    candidate = file_name
+    if not os.path.isabs(candidate):
+        candidate = os.path.join(REPO_ROOT, candidate)
+    if os.path.exists(candidate):
+        return candidate
+
+    if os.path.basename(file_name) == 'test15splits2.csv':
+        fallback = os.path.join(REPO_ROOT, 'datalist', 'test15splits.csv')
+        if os.path.exists(fallback):
+            return fallback
+
+    raise FileNotFoundError(f'Split file not found: {file_name}')
+
 patch_size = 128
 
 HGG = []
@@ -35,7 +52,7 @@ mask_array = np.array([[True, False, False, False], [False, True, False, False],
 
 class Brats_loadall_nii(Dataset):
     def __init__(self, transforms='', root=None, modal='all', num_cls=4, train_file='train.txt'):
-        data_file_path = os.path.join('/work/grana_neuro/missing_modalities/IMFuse', train_file)
+        data_file_path = _resolve_split_file(train_file)
         with open(data_file_path, 'r') as f:
             datalist = [i.strip() for i in f.readlines()] #875 elements
         # datalist.sort()
@@ -92,7 +109,7 @@ class Brats_loadall_nii(Dataset):
 
 class Brats_loadall_test_nii(Dataset):
     def __init__(self, transforms='', root=None, test_file='test.txt', modal='all', num_cls=4):
-        data_file_path = os.path.join('/work/grana_neuro/missing_modalities/IMFuse', test_file)
+        data_file_path = _resolve_split_file(test_file)
         df = pd.read_csv(data_file_path)
         datalist = df['case']
         #with open(data_file_path, 'r') as f:
@@ -155,7 +172,7 @@ class Brats_loadall_test_nii(Dataset):
 
 class Brats_loadall_val_nii(Dataset):
     def __init__(self, transforms='', root=None, val_file='val.txt', modal='all', num_cls=4):
-        data_file_path = os.path.join('/work/grana_neuro/missing_modalities/IMFuse', val_file)
+        data_file_path = _resolve_split_file(val_file)
         df = pd.read_csv(data_file_path)
         datalist = df['case']
         #with open(data_file_path, 'r') as f:

@@ -33,7 +33,7 @@ parser = argparse.ArgumentParser()
 
 # 基础训练参数 (与 train_poly.py 一致)
 parser.add_argument('--batch_size', default=1, type=int)
-parser.add_argument('--datapath', default=None, type=str)
+parser.add_argument('--datapath', default=os.path.join(path, 'dataset', 'BRATS2023_Training_npy'), type=str)
 parser.add_argument('--dataname', default='BRATS2023', type=str)
 parser.add_argument('--savepath', default=None, type=str)
 parser.add_argument('--lr', default=2e-4, type=float, help='Base learning rate')
@@ -435,7 +435,7 @@ def main():
 
     if args.dataname in ['BRATS2023', 'BRATS2020', 'BRATS2015']:
         train_file = 'datalist/train.txt'
-        test_file = 'datalist/test15splits2.csv'
+        test_file = 'datalist/test15splits.csv'
         val_file = 'datalist/val15splits.csv'
     elif args.dataname == 'BRATS2018':
         test_file = 'datalist/Brats18_test15splits.csv'

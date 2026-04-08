@@ -25,7 +25,7 @@ DEBUG_ITER = 1
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--batch_size', default=1, type=int, help='Batch size')
-parser.add_argument('--datapath', default=None, type=str)
+parser.add_argument('--datapath', default=os.path.join(path, 'dataset', 'BRATS2023_Training_npy'), type=str)
 parser.add_argument('--dataname', default='BRATS2018', type=str)
 parser.add_argument('--savepath', default=None, type=str)
 parser.add_argument('--resume', default=None, type=str)
@@ -135,7 +135,7 @@ def main():
     ########## Setting data
     if args.dataname in ['BRATS2023', 'BRATS2020', 'BRATS2015']:
         train_file = 'datalist/train.txt'
-        test_file = 'datalist/test15splits2.csv'
+        test_file = 'datalist/test15splits.csv'
         val_file = 'datalist/val15splits.csv'
         #test_file = 'datalist/test.txt'
         #val_file = 'datalist/val.txt'
