@@ -36,9 +36,18 @@ python train_poly.py \
   --num_epochs 1000 \                          # Total number of training epochs
   --dataname BRATS2023 \                       # Dataset identifier
   --savepath <OUTPUT_PATH> \                   # Directory for saving checkpoints 
+  --tb_log_interval 10 \                       # Log TensorBoard scalars every 10 steps
+  --tb_image_interval 200 \                    # Log center-slice previews every 200 steps
   --mamba_skip \                               # Using Mamba in the skip connections
   --interleaved_tokenization                   # Enable interleaved tokenization
 ```
+
+TensorBoard logs are enabled by default and written to `<OUTPUT_PATH>/tensorboard`.
+Launch TensorBoard with:
+```
+tensorboard --logdir <OUTPUT_PATH>/tensorboard --bind_all
+```
+If you want to disable TensorBoard logging for a run, add `--no_tensorboard`.
 
 ### Test
 Run the test script `test.py` with the following arguments:
