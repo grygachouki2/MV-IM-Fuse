@@ -88,7 +88,7 @@ def main():
             print("  ✓ 预训练权重加载成功")
         except Exception as e:
             print(f"  ✗ 预训练权重加载失败: {e}")
-            sys.exit(1)
+            raise e
     else:
         print("\n[2/6] 跳过预训练权重加载 (使用随机初始化)")
 
