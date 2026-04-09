@@ -674,6 +674,7 @@ def main():
         sep_cross_loss_epoch = 0.0
         sep_dice_loss_epoch = 0.0
         loss_epoch = 0.0
+        full_loss_epoch = 0.0
 
         for i in range(iter_per_epoch):
             iter_start = time.time()
@@ -719,11 +720,17 @@ def main():
                     prm_dice_loss += criterions.dice_loss(prm_pred, target, num_cls=num_cls)
                 prm_loss = prm_cross_loss + prm_dice_loss
 
+                # Stage 1/2 only train the hybrid token encoder. The sep branch bypasses it,
+                # so sep_loss becomes a constant offset that distorts the training curve.
+                sep_loss_for_optimization = sep_loss if stage == 3 else sep_loss.new_zeros(())
+
                 # Total loss
                 if epoch < args.region_fusion_start_epoch:
-                    loss = fuse_loss * 0.0 + sep_loss + prm_loss
+                    loss = fuse_loss * 0.0 + sep_loss_for_optimization + prm_loss
+                    full_loss = fuse_loss * 0.0 + sep_loss + prm_loss
                 else:
-                    loss = fuse_loss + sep_loss + prm_loss
+                    loss = fuse_loss + sep_loss_for_optimization + prm_loss
+                    full_loss = fuse_loss + sep_loss + prm_loss
 
             scaler.scale(loss).backward()
             if should_log_step and scaler.is_enabled():
@@ -739,6 +746,7 @@ def main():
             prm_cross_loss_epoch += prm_cross_loss.item()
             prm_dice_loss_epoch += prm_dice_loss.item()
             loss_epoch += loss.item()
+            full_loss_epoch += full_loss.item()
 
             batch_time = time.time() - iter_start
 
@@ -747,6 +755,7 @@ def main():
                     writer,
                     {
                         f'stage{stage}/train_step/loss': loss.item(),
+                        f'stage{stage}/train_step/full_loss': full_loss.item(),
                         f'stage{stage}/train_step/fuse_cross_loss': fuse_cross_loss.item(),
                         f'stage{stage}/train_step/fuse_dice_loss': fuse_dice_loss.item(),
                         f'stage{stage}/train_step/sep_cross_loss': sep_cross_loss.item(),
@@ -786,6 +795,7 @@ def main():
         wandb.log({
             f"stage{stage}/epoch": epoch,
             f"stage{stage}/loss": loss_epoch / iter_per_epoch,
+            f"stage{stage}/full_loss": full_loss_epoch / iter_per_epoch,
             f"stage{stage}/fusecross": fuse_cross_loss_epoch / iter_per_epoch,
             f"stage{stage}/fusedice": fuse_dice_loss_epoch / iter_per_epoch,
             f"stage{stage}/sepcross": sep_cross_loss_epoch / iter_per_epoch,
@@ -798,6 +808,7 @@ def main():
         if writer is not None:
             epoch_scalars = {
                 f'stage{stage}/train_epoch/loss': loss_epoch / iter_per_epoch,
+                f'stage{stage}/train_epoch/full_loss': full_loss_epoch / iter_per_epoch,
                 f'stage{stage}/train_epoch/fuse_cross_loss': fuse_cross_loss_epoch / iter_per_epoch,
                 f'stage{stage}/train_epoch/fuse_dice_loss': fuse_dice_loss_epoch / iter_per_epoch,
                 f'stage{stage}/train_epoch/sep_cross_loss': sep_cross_loss_epoch / iter_per_epoch,
