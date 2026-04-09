@@ -440,7 +440,7 @@ class IMFuseHybrid(nn.Module):
         num_attn_blocks=1,
         drop_path=0.1,
         hybrid_mlp_ratio=4.0,
-        hybrid_layer_scale=1e-2,
+        hybrid_layer_scale=0.0,
     ):
         super(IMFuseHybrid, self).__init__()
         self.interleaved_tokenization = interleaved_tokenization

@@ -76,13 +76,14 @@ parser.add_argument('--num_mamba_blocks', default=1, type=int, help='MV-Mixer bl
 parser.add_argument('--num_attn_blocks', default=1, type=int, help='Attention block 数量')
 parser.add_argument('--drop_path', default=0.1, type=float, help='Drop path rate')
 parser.add_argument('--hybrid_mlp_ratio', default=4.0, type=float, help='Hybrid Encoder MLP ratio')
-parser.add_argument('--hybrid_layer_scale', default=1e-2, type=float, help='Hybrid Encoder residual layer scale; set <= 0 to disable')
+parser.add_argument('--hybrid_layer_scale', default=0.0, type=float, help='Hybrid Encoder residual layer scale; set <= 0 to disable')
 
 # 三阶段训练
 parser.add_argument('--stage', default=1, type=int, choices=[1, 2, 3], help='当前训练阶段')
 parser.add_argument('--stage1_epochs', default=50, type=int)
 parser.add_argument('--stage2_epochs', default=100, type=int)
 parser.add_argument('--stage3_epochs', default=300, type=int)
+parser.add_argument('--stage1_full_modalities', action=argparse.BooleanOptionalAction, default=True, help='Use full-modality masks during Stage 1 warm-up so every modality branch receives gradients each step')
 
 # 预训练权重
 parser.add_argument('--pretrained_imfuse', default=None, type=str, help='IM-Fuse 预训练检查点路径')
@@ -451,6 +452,8 @@ def main():
     if stage_epochs not in val_check:
         val_check.append(stage_epochs)
     print(f"Stage {stage}: {stage_epochs} epochs, val at {val_check}")
+    if stage == 1 and args.stage1_full_modalities:
+        print('Stage 1 warm-up will use full-modality masks for denser gradients.', flush=True)
 
     # Init wandb
     slurm_job_id = os.getenv("SLURM_JOB_ID", "local")
@@ -471,6 +474,8 @@ def main():
             "num_mamba_blocks": args.num_mamba_blocks,
             "num_attn_blocks": args.num_attn_blocks,
             "drop_path": args.drop_path,
+            "hybrid_layer_scale": args.hybrid_layer_scale,
+            "stage1_full_modalities": args.stage1_full_modalities,
             "amp": amp_enabled,
             "amp_dtype": amp_dtype_name,
             "flash_attention": args.flash_attention,
@@ -620,6 +625,7 @@ def main():
             f'stage{stage}/meta/amp_enabled': int(amp_enabled),
             f'stage{stage}/meta/amp_fp16_scaler_enabled': int(scaler.is_enabled()),
             f'stage{stage}/meta/flash_attention_requested': int(args.flash_attention),
+            f'stage{stage}/meta/full_modalities_warmup': int(stage == 1 and args.stage1_full_modalities),
         }
         log_scalars(writer, meta_scalars, 0)
         for group_index, param_group in enumerate(param_groups):
@@ -655,6 +661,8 @@ def main():
             x = x.cuda(non_blocking=True)
             target = target.cuda(non_blocking=True)
             mask = mask.cuda(non_blocking=True)
+            if stage == 1 and args.stage1_full_modalities:
+                mask = torch.ones_like(mask, dtype=torch.bool)
 
             optimizer.zero_grad(set_to_none=True)
             should_log_step = writer is not None and (step == 1 or step % args.tb_log_interval == 0)
