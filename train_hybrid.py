@@ -376,7 +376,23 @@ def load_imfuse_pretrained(model, checkpoint_path):
 def load_stage_checkpoint(model, checkpoint_path):
     """加载阶段检查点到 IMFuseHybrid (完整模型权重)。"""
     checkpoint = load_local_checkpoint(checkpoint_path, map_location='cpu')
-    model.load_state_dict(checkpoint['state_dict'])
+    state_dict = checkpoint['state_dict']
+    model_state_dict = model.state_dict()
+
+    model_has_module_prefix = any(key.startswith('module.') for key in model_state_dict.keys())
+    checkpoint_has_module_prefix = any(key.startswith('module.') for key in state_dict.keys())
+
+    if checkpoint_has_module_prefix and not model_has_module_prefix:
+        state_dict = {
+            key.replace('module.', '', 1) if key.startswith('module.') else key: value
+            for key, value in state_dict.items()
+        }
+    elif model_has_module_prefix and not checkpoint_has_module_prefix:
+        state_dict = {
+            f'module.{key}': value for key, value in state_dict.items()
+        }
+
+    model.load_state_dict(state_dict)
     return checkpoint
 
 
