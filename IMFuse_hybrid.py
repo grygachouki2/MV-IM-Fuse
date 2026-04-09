@@ -511,7 +511,7 @@ class IMFuseHybrid(nn.Module):
         self.masker = MaskModal()
 
         ######## Skip Connections (完全不变)
-        if self.mamba_skip and not first_skip:
+        if mamba_skip and not first_skip:
             self.tokenize = nn.ModuleList([
                 TokenizerClass(dims=16, num_modals=num_modals),
                 TokenizerClass(dims=32, num_modals=num_modals),
