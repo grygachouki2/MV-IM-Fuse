@@ -70,6 +70,7 @@ def main():
         num_cls=num_cls,
         interleaved_tokenization=False,
         mamba_skip=True,
+        first_skip=True,
         num_mamba_blocks=args.num_mamba_blocks,
         num_attn_blocks=args.num_attn_blocks,
         drop_path=args.drop_path,

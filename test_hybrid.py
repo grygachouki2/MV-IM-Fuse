@@ -26,6 +26,7 @@ parser.add_argument('--test_file', default='datalist/test15splits.csv', type=str
 parser.add_argument('--datapath', default=os.path.join(path, 'dataset', 'BRATS2023_Training_npy'), type=str)
 parser.add_argument('--interleaved_tokenization', action='store_true', default=False)
 parser.add_argument('--mamba_skip', action='store_true', default=False)
+parser.add_argument('--first_skip', action='store_true', default=False)
 parser.add_argument('--num_mamba_blocks', default=1, type=int)
 parser.add_argument('--num_attn_blocks', default=1, type=int)
 parser.add_argument('--drop_path', default=0.1, type=float)
@@ -80,6 +81,7 @@ if __name__ == '__main__':
         num_cls=num_cls,
         interleaved_tokenization=args.interleaved_tokenization,
         mamba_skip=args.mamba_skip,
+        first_skip=args.first_skip,
         num_mamba_blocks=args.num_mamba_blocks,
         num_attn_blocks=args.num_attn_blocks,
         drop_path=args.drop_path,

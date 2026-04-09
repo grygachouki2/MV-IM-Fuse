@@ -458,7 +458,8 @@ def main():
     # Init wandb
     slurm_job_id = os.getenv("SLURM_JOB_ID", "local")
     exp_name = f'E{args.num_mamba_blocks}M{args.num_attn_blocks}A'
-    wandb_name = f'{args.dataname}_Hybrid_{exp_name}_S{stage}_jobid{slurm_job_id}'
+    skip_tag = '1skip' if args.first_skip else 'no1skip'
+    wandb_name = f'{args.dataname}_Hybrid_{exp_name}_{skip_tag}_S{stage}_jobid{slurm_job_id}'
     wandb_mode = resolve_wandb_mode(args)
     print(f"W&B mode: {wandb_mode}", flush=True)
     init_wandb_run(
@@ -475,6 +476,7 @@ def main():
             "num_attn_blocks": args.num_attn_blocks,
             "drop_path": args.drop_path,
             "hybrid_layer_scale": args.hybrid_layer_scale,
+            "first_skip": args.first_skip,
             "stage1_full_modalities": args.stage1_full_modalities,
             "amp": amp_enabled,
             "amp_dtype": amp_dtype_name,
@@ -538,6 +540,7 @@ def main():
         num_cls=num_cls,
         interleaved_tokenization=args.interleaved_tokenization,
         mamba_skip=args.mamba_skip,
+        first_skip=args.first_skip,
         num_mamba_blocks=args.num_mamba_blocks,
         num_attn_blocks=args.num_attn_blocks,
         drop_path=args.drop_path,

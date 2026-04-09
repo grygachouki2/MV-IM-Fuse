@@ -213,7 +213,7 @@ class Decoder_sep(nn.Module):
 
 
 class Decoder_fuse(nn.Module):
-    def __init__(self, num_cls=4, mamba_skip=False):
+    def __init__(self, num_cls=4, mamba_skip=False, first_skip=True):
         super(Decoder_fuse, self).__init__()
         self.d4_c1 = general_conv3d_prenorm(basic_dims * 16, basic_dims * 8, pad_type='reflect')
         self.d4_c2 = general_conv3d_prenorm(basic_dims * 16, basic_dims * 8, pad_type='reflect')
@@ -228,7 +228,10 @@ class Decoder_fuse(nn.Module):
         self.d2_out = general_conv3d_prenorm(basic_dims * 2, basic_dims * 2, k_size=1, padding=0, pad_type='reflect')
 
         self.d1_c1 = general_conv3d_prenorm(basic_dims * 2, basic_dims, pad_type='reflect')
-        self.d1_c2 = general_conv3d_prenorm(basic_dims * 2, basic_dims, pad_type='reflect')
+        if first_skip:
+            self.d1_c2 = general_conv3d_prenorm(basic_dims * 2, basic_dims, pad_type='reflect')
+        else:
+            self.d1_c2 = general_conv3d_prenorm(basic_dims, basic_dims, pad_type='reflect')
         self.d1_out = general_conv3d_prenorm(basic_dims, basic_dims, k_size=1, padding=0, pad_type='reflect')
 
         self.seg_d4 = nn.Conv3d(in_channels=basic_dims * 16, out_channels=num_cls, kernel_size=1, stride=1, padding=0, bias=True)
@@ -247,8 +250,9 @@ class Decoder_fuse(nn.Module):
         self.RFM4 = fusion_prenorm(in_channel=basic_dims * 8, num_cls=1 if mamba_skip else num_cls)
         self.RFM3 = fusion_prenorm(in_channel=basic_dims * 4, num_cls=1 if mamba_skip else num_cls)
         self.RFM2 = fusion_prenorm(in_channel=basic_dims * 2, num_cls=1 if mamba_skip else num_cls)
-        self.RFM1 = fusion_prenorm(in_channel=basic_dims * 1, num_cls=1 if mamba_skip else num_cls)
+        self.RFM1 = fusion_prenorm(in_channel=basic_dims * 1, num_cls=1 if mamba_skip else num_cls) if first_skip else None
         self.mamba_skip = mamba_skip
+        self.first_skip = first_skip
 
     def forward(self, x1, x2, x3, x4, x5):
         de_x5 = self.RFM5(x5)
@@ -273,9 +277,12 @@ class Decoder_fuse(nn.Module):
         pred1 = self.softmax(self.seg_d1(de_x2))
         de_x2 = self.d1_c1(self.up2(de_x2))
 
-        de_x1 = self.RFM1(x1)
-        de_x1 = torch.cat((de_x1, de_x2), dim=1)
-        de_x1 = self.d1_out(self.d1_c2(de_x1))
+        if self.first_skip:
+            de_x1 = self.RFM1(x1)
+            de_x1 = torch.cat((de_x1, de_x2), dim=1)
+            de_x1 = self.d1_out(self.d1_c2(de_x1))
+        else:
+            de_x1 = self.d1_out(self.d1_c2(de_x2))
 
         logits = self.seg_layer(de_x1)
         pred = self.softmax(logits)
@@ -436,6 +443,7 @@ class IMFuseHybrid(nn.Module):
         num_cls=4,
         interleaved_tokenization=False,
         mamba_skip=False,
+        first_skip=True,
         num_mamba_blocks=1,
         num_attn_blocks=1,
         drop_path=0.1,
@@ -503,27 +511,42 @@ class IMFuseHybrid(nn.Module):
         self.masker = MaskModal()
 
         ######## Skip Connections (完全不变)
-        self.tokenize = nn.ModuleList([
-            TokenizerClass(dims=8, num_modals=num_modals),
-            TokenizerClass(dims=16, num_modals=num_modals),
-            TokenizerClass(dims=32, num_modals=num_modals),
-            TokenizerClass(dims=64, num_modals=num_modals),
-            TokenizerClass(dims=512, num_modals=num_modals),
-        ])
-        self.mamba_fusion_layers = nn.ModuleList([
-            MambaFusionLayerClass(dim=8, num_tokens_fused_representation=128 ** 3),
-            MambaFusionLayerClass(dim=16, num_tokens_fused_representation=64 ** 3),
-            MambaFusionLayerClass(dim=32, num_tokens_fused_representation=32 ** 3),
-            MambaFusionLayerClass(dim=64, num_tokens_fused_representation=16 ** 3),
-            MambaFusionLayerClass(dim=512, num_tokens_fused_representation=8 ** 3),
-        ])
+        if self.mamba_skip and not first_skip:
+            self.tokenize = nn.ModuleList([
+                TokenizerClass(dims=16, num_modals=num_modals),
+                TokenizerClass(dims=32, num_modals=num_modals),
+                TokenizerClass(dims=64, num_modals=num_modals),
+                TokenizerClass(dims=512, num_modals=num_modals),
+            ])
+            self.mamba_fusion_layers = nn.ModuleList([
+                MambaFusionLayerClass(dim=16, num_tokens_fused_representation=64 ** 3),
+                MambaFusionLayerClass(dim=32, num_tokens_fused_representation=32 ** 3),
+                MambaFusionLayerClass(dim=64, num_tokens_fused_representation=16 ** 3),
+                MambaFusionLayerClass(dim=512, num_tokens_fused_representation=8 ** 3),
+            ])
+        else:
+            self.tokenize = nn.ModuleList([
+                TokenizerClass(dims=8, num_modals=num_modals),
+                TokenizerClass(dims=16, num_modals=num_modals),
+                TokenizerClass(dims=32, num_modals=num_modals),
+                TokenizerClass(dims=64, num_modals=num_modals),
+                TokenizerClass(dims=512, num_modals=num_modals),
+            ])
+            self.mamba_fusion_layers = nn.ModuleList([
+                MambaFusionLayerClass(dim=8, num_tokens_fused_representation=128 ** 3),
+                MambaFusionLayerClass(dim=16, num_tokens_fused_representation=64 ** 3),
+                MambaFusionLayerClass(dim=32, num_tokens_fused_representation=32 ** 3),
+                MambaFusionLayerClass(dim=64, num_tokens_fused_representation=16 ** 3),
+                MambaFusionLayerClass(dim=512, num_tokens_fused_representation=8 ** 3),
+            ])
         ########
 
-        self.decoder_fuse = Decoder_fuse(num_cls=num_cls, mamba_skip=mamba_skip)
+        self.decoder_fuse = Decoder_fuse(num_cls=num_cls, mamba_skip=mamba_skip, first_skip=first_skip)
         self.decoder_sep = Decoder_sep(num_cls=num_cls)
 
         self.is_training = False
         self.mamba_skip = mamba_skip
+        self.first_skip = first_skip
 
         self.apply(InitWeights_He(1e-2))
 
@@ -566,21 +589,34 @@ class IMFuseHybrid(nn.Module):
 
         ########### Mamba Skip
         if self.mamba_skip:
-            x1 = self.tokenize[-5](x1)
-            x1 = self.mamba_fusion_layers[-5](x1)
-            x1 = x1.view(x.size(0), input_patch_size, input_patch_size, input_patch_size, basic_dims).permute(0, 4, 1, 2, 3).contiguous()
+            if self.first_skip:
+                x1 = self.tokenize[0](x1)
+                x1 = self.mamba_fusion_layers[0](x1)
+                x1 = x1.view(x.size(0), input_patch_size, input_patch_size, input_patch_size, basic_dims).permute(0, 4, 1, 2, 3).contiguous()
 
-            x2 = self.tokenize[-4](x2)
-            x2 = self.mamba_fusion_layers[-4](x2)
-            x2 = x2.view(x.size(0), input_patch_size // 2, input_patch_size // 2, input_patch_size // 2, basic_dims * 2).permute(0, 4, 1, 2, 3).contiguous()
+                x2 = self.tokenize[1](x2)
+                x2 = self.mamba_fusion_layers[1](x2)
+                x2 = x2.view(x.size(0), input_patch_size // 2, input_patch_size // 2, input_patch_size // 2, basic_dims * 2).permute(0, 4, 1, 2, 3).contiguous()
 
-            x3 = self.tokenize[-3](x3)
-            x3 = self.mamba_fusion_layers[-3](x3)
-            x3 = x3.view(x.size(0), input_patch_size // 4, input_patch_size // 4, input_patch_size // 4, basic_dims * 4).permute(0, 4, 1, 2, 3).contiguous()
+                x3 = self.tokenize[2](x3)
+                x3 = self.mamba_fusion_layers[2](x3)
+                x3 = x3.view(x.size(0), input_patch_size // 4, input_patch_size // 4, input_patch_size // 4, basic_dims * 4).permute(0, 4, 1, 2, 3).contiguous()
 
-            x4 = self.tokenize[-2](x4)
-            x4 = self.mamba_fusion_layers[-2](x4)
-            x4 = x4.view(x.size(0), input_patch_size // 8, input_patch_size // 8, input_patch_size // 8, basic_dims * 8).permute(0, 4, 1, 2, 3).contiguous()
+                x4 = self.tokenize[3](x4)
+                x4 = self.mamba_fusion_layers[3](x4)
+                x4 = x4.view(x.size(0), input_patch_size // 8, input_patch_size // 8, input_patch_size // 8, basic_dims * 8).permute(0, 4, 1, 2, 3).contiguous()
+            else:
+                x2 = self.tokenize[0](x2)
+                x2 = self.mamba_fusion_layers[0](x2)
+                x2 = x2.view(x.size(0), input_patch_size // 2, input_patch_size // 2, input_patch_size // 2, basic_dims * 2).permute(0, 4, 1, 2, 3).contiguous()
+
+                x3 = self.tokenize[1](x3)
+                x3 = self.mamba_fusion_layers[1](x3)
+                x3 = x3.view(x.size(0), input_patch_size // 4, input_patch_size // 4, input_patch_size // 4, basic_dims * 4).permute(0, 4, 1, 2, 3).contiguous()
+
+                x4 = self.tokenize[2](x4)
+                x4 = self.mamba_fusion_layers[2](x4)
+                x4 = x4.view(x.size(0), input_patch_size // 8, input_patch_size // 8, input_patch_size // 8, basic_dims * 8).permute(0, 4, 1, 2, 3).contiguous()
         #######
 
         ########### MambaFusion + InterFormer (完全不变)
