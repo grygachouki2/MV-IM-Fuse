@@ -26,7 +26,7 @@ class general_conv3d_prenorm(nn.Module):
         super(general_conv3d_prenorm, self).__init__()
         self.conv = nn.Conv3d(in_channels=in_ch, out_channels=out_ch, kernel_size=k_size, stride=stride, padding=padding, padding_mode=pad_type, bias=True)
 
-        self.norm = normalization(out_ch, norm=norm)
+        self.norm = normalization(in_ch, norm=norm)
         if act_type == 'relu':
             self.activation = nn.ReLU(inplace=True)
         elif act_type == 'lrelu':
