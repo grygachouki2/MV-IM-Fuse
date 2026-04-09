@@ -20,31 +20,32 @@ def dice_loss(output, target, num_cls=5, eps=1e-7):
             dice += 2.0 * num / (l+r+eps)
     return 1.0 - 1.0 * dice / num_cls
 
-def softmax_weighted_loss(output, target, num_cls=5):
+def softmax_weighted_loss(output, target, num_cls=5, eps=1e-7):
     target = target.float() #(B, 4, 128, 128, 128)
     B, _, H, W, Z = output.size() #(B, C, 128, 128, 128)
+    target_sum = torch.sum(target, (1,2,3,4)).clamp_min(eps)
     for i in range(num_cls):
         outputi = output[:, i, :, :, :] #(B, 128, 128, 128)
         targeti = target[:, i, :, :, :]
-        weighted = 1.0 - (torch.sum(targeti, (1,2,3)) * 1.0 / torch.sum(target, (1,2,3,4)))
+        weighted = 1.0 - (torch.sum(targeti, (1,2,3)) * 1.0 / target_sum)
         weighted = torch.reshape(weighted, (-1,1,1,1)).repeat(1,H,W,Z)
         if i == 0:
-            cross_loss = -1.0 * weighted * targeti * torch.log(torch.clamp(outputi, min=0.005, max=1)).float()
+            cross_loss = -1.0 * weighted * targeti * torch.log(outputi.float() + eps)
         else:
-            cross_loss += -1.0 * weighted * targeti * torch.log(torch.clamp(outputi, min=0.005, max=1)).float()
+            cross_loss += -1.0 * weighted * targeti * torch.log(outputi.float() + eps)
     cross_loss = torch.mean(cross_loss)
     return cross_loss
             
-def softmax_loss(output, target, num_cls=5):
+def softmax_loss(output, target, num_cls=5, eps=1e-7):
     target = target.float()
     _, _, H, W, Z = output.size()
     for i in range(num_cls):
         outputi = output[:, i, :, :, :]
         targeti = target[:, i, :, :, :]
         if i == 0:
-            cross_loss = -1.0 * targeti * torch.log(torch.clamp(outputi, min=0.005, max=1)).float()
+            cross_loss = -1.0 * targeti * torch.log(outputi.float() + eps)
         else:
-            cross_loss += -1.0 * targeti * torch.log(torch.clamp(outputi, min=0.005, max=1)).float()
+            cross_loss += -1.0 * targeti * torch.log(outputi.float() + eps)
     cross_loss = torch.mean(cross_loss)
     return cross_loss
 
