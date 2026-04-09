@@ -31,6 +31,11 @@ parser.add_argument('--num_mamba_blocks', default=1, type=int)
 parser.add_argument('--num_attn_blocks', default=1, type=int)
 parser.add_argument('--drop_path', default=0.1, type=float)
 parser.add_argument('--hybrid_mlp_ratio', default=8.0, type=float)
+parser.add_argument('--mamba_mlp_ratio', default=4.0, type=float)
+parser.add_argument('--attn_mlp_ratio', default=8.0, type=float)
+parser.add_argument('--hybrid_layer_scale', default=0.0, type=float)
+parser.add_argument('--mamba_layer_scale', default=1e-5, type=float)
+parser.add_argument('--attn_layer_scale', default=0.0, type=float)
 parser.add_argument('--save_masks', action='store_true', default=False)
 
 if __name__ == '__main__':
@@ -86,6 +91,11 @@ if __name__ == '__main__':
         num_attn_blocks=args.num_attn_blocks,
         drop_path=args.drop_path,
         hybrid_mlp_ratio=args.hybrid_mlp_ratio,
+        hybrid_layer_scale=args.hybrid_layer_scale,
+        mamba_mlp_ratio=args.mamba_mlp_ratio,
+        attn_mlp_ratio=args.attn_mlp_ratio,
+        mamba_layer_scale=args.mamba_layer_scale if args.mamba_layer_scale > 0 else None,
+        attn_layer_scale=args.attn_layer_scale if args.attn_layer_scale > 0 else None,
     )
     model = torch.nn.DataParallel(model).cuda()
     checkpoint = load_local_checkpoint(args.resume)

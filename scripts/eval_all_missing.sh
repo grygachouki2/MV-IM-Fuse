@@ -22,6 +22,7 @@ python test_hybrid.py \
     --num_mamba_blocks ${NUM_MAMBA} \
     --num_attn_blocks ${NUM_ATTN} \
     --drop_path 0.1 \
-    --mamba_skip
+    --mamba_skip \
+    --first_skip
 
 echo "评估完成! 结果保存在 ${SAVEPATH}"

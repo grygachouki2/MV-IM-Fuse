@@ -435,7 +435,9 @@ class IMFuseHybrid(nn.Module):
         num_mamba_blocks: MV-Mixer block 数量 (默认 1)
         num_attn_blocks: Self-Attention block 数量 (默认 1)  
         drop_path: DropPath 概率 (默认 0.1)
-        hybrid_mlp_ratio: Hybrid Encoder MLP 扩展比 (默认 8.0，可完整复用 IM-Fuse FFN 权重)
+        hybrid_mlp_ratio: Hybrid Encoder 共享 MLP 扩展比（向后兼容）
+        mamba_mlp_ratio: MV-Mixer block 的 MLP 扩展比
+        attn_mlp_ratio: Attention block 的 MLP 扩展比 (默认 8.0，可完整复用 IM-Fuse FFN 权重)
     """
 
     def __init__(
@@ -449,6 +451,10 @@ class IMFuseHybrid(nn.Module):
         drop_path=0.1,
         hybrid_mlp_ratio=8.0,
         hybrid_layer_scale=0.0,
+        mamba_mlp_ratio=None,
+        attn_mlp_ratio=None,
+        mamba_layer_scale=None,
+        attn_layer_scale=None,
     ):
         super(IMFuseHybrid, self).__init__()
         self.interleaved_tokenization = interleaved_tokenization
@@ -491,8 +497,12 @@ class IMFuseHybrid(nn.Module):
             num_attn_blocks=num_attn_blocks,
             num_heads=num_heads,
             mlp_ratio=hybrid_mlp_ratio,
+            mamba_mlp_ratio=mamba_mlp_ratio,
+            attn_mlp_ratio=attn_mlp_ratio,
             drop_path=drop_path,
             layer_scale=hybrid_layer_scale if hybrid_layer_scale > 0 else None,
+            mamba_layer_scale=mamba_layer_scale,
+            attn_layer_scale=attn_layer_scale,
         )
         self.flair_hybrid_encoder = HybridTokenEncoder(**hybrid_kwargs)
         self.t1ce_hybrid_encoder = HybridTokenEncoder(**hybrid_kwargs)

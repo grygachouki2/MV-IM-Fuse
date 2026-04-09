@@ -75,8 +75,13 @@ parser.add_argument('--matmul_precision', default='high', choices=['highest', 'h
 parser.add_argument('--num_mamba_blocks', default=1, type=int, help='MV-Mixer block 数量')
 parser.add_argument('--num_attn_blocks', default=1, type=int, help='Attention block 数量')
 parser.add_argument('--drop_path', default=0.1, type=float, help='Drop path rate')
-parser.add_argument('--hybrid_mlp_ratio', default=8.0, type=float, help='Hybrid Encoder MLP ratio; use 8.0 to fully reuse the pretrained IM-Fuse FFN weights')
-parser.add_argument('--hybrid_layer_scale', default=0.0, type=float, help='Hybrid Encoder residual layer scale; set <= 0 to disable')
+parser.add_argument('--hybrid_mlp_ratio', default=8.0, type=float, help='Shared Hybrid Encoder MLP ratio fallback for both Mamba and Attention blocks')
+parser.add_argument('--mamba_mlp_ratio', default=4.0, type=float, help='MV-Mixer block MLP ratio; lower values reduce random residual noise during warm-up')
+parser.add_argument('--attn_mlp_ratio', default=8.0, type=float, help='Attention block MLP ratio; keep 8.0 to fully reuse pretrained IM-Fuse FFN weights')
+parser.add_argument('--hybrid_layer_scale', default=0.0, type=float, help='Shared Hybrid Encoder residual layer scale fallback; set <= 0 to disable')
+parser.add_argument('--mamba_layer_scale', default=1e-5, type=float, help='MV-Mixer block layer scale; use a near-zero value to preserve pretrained features at initialization')
+parser.add_argument('--attn_layer_scale', default=0.0, type=float, help='Attention block layer scale; set <= 0 to keep the pretrained residual path unchanged')
+parser.add_argument('--warmup_epochs', default=0, type=int, help='Linear LR warmup epochs; set <= 0 to use the stage-specific default')
 
 # 三阶段训练
 parser.add_argument('--stage', default=1, type=int, choices=[1, 2, 3], help='当前训练阶段')
@@ -102,12 +107,19 @@ path = os.path.dirname(__file__)
 class GroupPolyLR:
     """分组 Poly LR Scheduler，每个参数组有独立的 base LR。"""
 
-    def __init__(self, base_lrs, num_epochs):
+    def __init__(self, base_lrs, num_epochs, warmup_epochs=0):
         self.base_lrs = base_lrs
         self.num_epochs = num_epochs
+        self.warmup_epochs = max(0, warmup_epochs)
 
     def __call__(self, optimizer, epoch):
-        factor = np.power(1 - np.float32(epoch) / np.float32(self.num_epochs), 0.9)
+        if self.warmup_epochs > 0 and epoch < self.warmup_epochs:
+            factor = np.float32(epoch + 1) / np.float32(self.warmup_epochs)
+        else:
+            decay_denominator = max(1, self.num_epochs - self.warmup_epochs)
+            decay_progress = np.float32(max(0, epoch - self.warmup_epochs)) / np.float32(decay_denominator)
+            decay_progress = min(decay_progress, np.float32(1.0))
+            factor = np.power(1 - decay_progress, 0.9)
         for i, base_lr in enumerate(self.base_lrs):
             now_lr = round(base_lr * factor, 8)
             optimizer.param_groups[i]['lr'] = now_lr
@@ -278,11 +290,16 @@ def load_imfuse_pretrained(model, checkpoint_path):
     # 2. 映射原始 Transformer 权重到 Hybrid Encoder 的最后一个 Attention block
     if hasattr(model, 'module'):
         n_mamba = model.module.num_mamba_blocks
+        n_attn = model.module.num_attn_blocks
     else:
         n_mamba = model.num_mamba_blocks
-    attn_block_idx = n_mamba  # Attention block 紧跟 Mamba blocks
+        n_attn = model.num_attn_blocks
+    attn_block_idx = n_mamba if n_attn > 0 else None
 
     for mod in modalities:
+        if attn_block_idx is None:
+            continue
+
         old_prefix = f'{mod}_transformer'
         new_prefix = f'{mod}_hybrid_encoder.blocks.{attn_block_idx}'
 
@@ -458,6 +475,8 @@ def main():
     # Stage config
     stage = args.stage
     stage_epochs = getattr(args, f'stage{stage}_epochs')
+    default_warmup_epochs = min(10, max(0, stage_epochs // 5)) if stage in (1, 2) else 0
+    warmup_epochs = args.warmup_epochs if args.warmup_epochs > 0 else default_warmup_epochs
 
     # Validation check epochs
     if stage_epochs <= 50:
@@ -470,6 +489,8 @@ def main():
     print(f"Stage {stage}: {stage_epochs} epochs, val at {val_check}")
     if stage == 1 and args.stage1_full_modalities:
         print('Stage 1 warm-up will use full-modality masks for denser gradients.', flush=True)
+    if warmup_epochs > 0:
+        print(f'Stage {stage}: linear LR warmup for first {warmup_epochs} epochs.', flush=True)
 
     # Init wandb
     slurm_job_id = os.getenv("SLURM_JOB_ID", "local")
@@ -492,6 +513,12 @@ def main():
             "num_attn_blocks": args.num_attn_blocks,
             "drop_path": args.drop_path,
             "hybrid_layer_scale": args.hybrid_layer_scale,
+            "mamba_layer_scale": args.mamba_layer_scale,
+            "attn_layer_scale": args.attn_layer_scale,
+            "hybrid_mlp_ratio": args.hybrid_mlp_ratio,
+            "mamba_mlp_ratio": args.mamba_mlp_ratio,
+            "attn_mlp_ratio": args.attn_mlp_ratio,
+            "warmup_epochs": warmup_epochs,
             "first_skip": args.first_skip,
             "stage1_full_modalities": args.stage1_full_modalities,
             "amp": amp_enabled,
@@ -562,6 +589,10 @@ def main():
         drop_path=args.drop_path,
         hybrid_mlp_ratio=args.hybrid_mlp_ratio,
         hybrid_layer_scale=args.hybrid_layer_scale,
+        mamba_mlp_ratio=args.mamba_mlp_ratio,
+        attn_mlp_ratio=args.attn_mlp_ratio,
+        mamba_layer_scale=args.mamba_layer_scale if args.mamba_layer_scale > 0 else None,
+        attn_layer_scale=args.attn_layer_scale if args.attn_layer_scale > 0 else None,
     )
     print(model)
 
@@ -582,13 +613,13 @@ def main():
             # 新阶段 (从上一阶段 checkpoint 开始)
             start_epoch = 0
             print(f"从 Stage {loaded_stage} checkpoint 开始 Stage {stage}")
-    elif args.pretrained_imfuse is not None and stage == 1:
-        # Stage 1: 从 IM-Fuse 预训练加载
+    elif args.pretrained_imfuse is not None and stage in (1, 2):
+        # Stage 1/2: 允许直接从 IM-Fuse 预训练加载
         load_imfuse_pretrained(model, args.pretrained_imfuse)
 
-    if args.pretrained_imfuse is not None and stage in (1, 2) and args.num_attn_blocks > 0 and args.hybrid_mlp_ratio != 8.0:
+    if args.pretrained_imfuse is not None and stage in (1, 2) and args.num_attn_blocks > 0 and args.attn_mlp_ratio != 8.0:
         warning_msg = (
-            'hybrid_mlp_ratio != 8.0 prevents full FFN weight transfer from the pretrained '
+            'attn_mlp_ratio != 8.0 prevents full FFN weight transfer from the pretrained '
             'IM-Fuse transformer. In Stage 1/2 this leaves part of the frozen hybrid attention '
             'block randomly initialized, which can stall optimization.'
         )
@@ -614,7 +645,7 @@ def main():
         print(f"  Group {i}: lr={pg['lr']:.2e}, params={n_params:,}")
 
     optimizer = torch.optim.RAdam(param_groups, weight_decay=args.weight_decay)
-    lr_schedule = GroupPolyLR(base_lrs, stage_epochs)
+    lr_schedule = GroupPolyLR(base_lrs, stage_epochs, warmup_epochs=warmup_epochs)
 
     # 如果是同阶段继续，恢复 optimizer 状态
     if args.stage_resume is not None and checkpoint.get('stage', stage) == stage:
@@ -723,14 +754,12 @@ def main():
                 # Stage 1/2 only train the hybrid token encoder. The sep branch bypasses it,
                 # so sep_loss becomes a constant offset that distorts the training curve.
                 sep_loss_for_optimization = sep_loss if stage == 3 else sep_loss.new_zeros(())
+                prm_loss_for_optimization = prm_loss if stage != 1 else prm_loss.new_zeros(())
+                fuse_loss_for_optimization = fuse_loss if epoch >= args.region_fusion_start_epoch else fuse_loss.new_zeros(())
 
                 # Total loss
-                if epoch < args.region_fusion_start_epoch:
-                    loss = fuse_loss * 0.0 + sep_loss_for_optimization + prm_loss
-                    full_loss = fuse_loss * 0.0 + sep_loss + prm_loss
-                else:
-                    loss = fuse_loss + sep_loss_for_optimization + prm_loss
-                    full_loss = fuse_loss + sep_loss + prm_loss
+                loss = fuse_loss_for_optimization + sep_loss_for_optimization + prm_loss_for_optimization
+                full_loss = fuse_loss + sep_loss + prm_loss
 
             scaler.scale(loss).backward()
             if should_log_step and scaler.is_enabled():

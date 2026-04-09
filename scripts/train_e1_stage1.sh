@@ -1,0 +1,27 @@
+python train_hybrid.py \
+    --datapath dataset/BRATS2023_npy \
+    --dataname BRATS2023 \
+    --savepath checkpoints/e2_hybrid1 \
+    --lr 2e-4 \
+    --weight_decay 3e-5 \
+    --batch_size 1 \
+    --seed 42 \
+    --num_mamba_blocks 1 \
+    --num_attn_blocks 1 \
+    --drop_path 0.1 \
+    --mamba_mlp_ratio 4.0 \
+    --attn_mlp_ratio 8.0 \
+    --mamba_layer_scale 1e-5 \
+    --warmup_epochs 10 \
+    --stage 1 \
+    --stage1_epochs 50 \
+    --stage1_full_modalities \
+    --pretrained_imfuse checkpoints/model_last.pth \
+    --mamba_skip \
+    --first_skip \
+    --amp \
+    --amp_dtype bf16 \
+    --flash_attention \
+    --wandb_mode offline \
+    --tensorboard \
+    --tensorboard_dir /root/tf-logs

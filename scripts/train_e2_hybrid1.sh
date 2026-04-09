@@ -27,6 +27,10 @@ COMMON_ARGS="
     --num_mamba_blocks 1
     --num_attn_blocks 1
     --drop_path 0.1
+    --mamba_mlp_ratio 4.0
+    --attn_mlp_ratio 8.0
+    --mamba_layer_scale 1e-5
+    --warmup_epochs 10
     --mamba_skip
     --first_skip
     --val_interval 10

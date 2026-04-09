@@ -295,9 +295,13 @@ class HybridTokenEncoder(nn.Module):
         num_mamba_blocks: MV-Mixer block 数量
         num_attn_blocks: Self-Attention block 数量 (放在 Mamba blocks 之后, Late Attention)
         num_heads: 注意力头数
-        mlp_ratio: MLP 隐藏层扩展比
+        mlp_ratio: 共享 MLP 隐藏层扩展比（向后兼容）
+        mamba_mlp_ratio: MV-Mixer block 的 MLP 扩展比
+        attn_mlp_ratio: Attention block 的 MLP 扩展比
         drop_path: DropPath 概率
-        layer_scale: Layer Scale 初始值
+        layer_scale: 共享 Layer Scale 初始值（向后兼容）
+        mamba_layer_scale: MV-Mixer block 的 Layer Scale 初始值
+        attn_layer_scale: Attention block 的 Layer Scale 初始值
         d_state: SSM 状态维度
         d_conv: SSM 深度卷积核大小
         expand: SSM 扩展因子
@@ -310,8 +314,12 @@ class HybridTokenEncoder(nn.Module):
         num_attn_blocks=1,
         num_heads=8,
         mlp_ratio=4.0,
+        mamba_mlp_ratio=None,
+        attn_mlp_ratio=None,
         drop_path=0.1,
         layer_scale=1e-2,
+        mamba_layer_scale=None,
+        attn_layer_scale=None,
         d_state=16,
         d_conv=3,
         expand=1,
@@ -321,6 +329,10 @@ class HybridTokenEncoder(nn.Module):
         self.num_attn_blocks = num_attn_blocks
         total_depth = num_mamba_blocks + num_attn_blocks
         drop_path_rates = torch.linspace(0, drop_path, total_depth).tolist() if total_depth > 0 else []
+        mamba_mlp_ratio = mlp_ratio if mamba_mlp_ratio is None else mamba_mlp_ratio
+        attn_mlp_ratio = mlp_ratio if attn_mlp_ratio is None else attn_mlp_ratio
+        mamba_layer_scale = layer_scale if mamba_layer_scale is None else mamba_layer_scale
+        attn_layer_scale = layer_scale if attn_layer_scale is None else attn_layer_scale
 
         blocks = []
         # Mamba blocks (前半部分)
@@ -330,9 +342,9 @@ class HybridTokenEncoder(nn.Module):
                     dim=dim,
                     use_attention=False,
                     num_heads=num_heads,
-                    mlp_ratio=mlp_ratio,
+                    mlp_ratio=mamba_mlp_ratio,
                     drop_path=drop_path_rates[block_index],
-                    layer_scale=layer_scale,
+                    layer_scale=mamba_layer_scale,
                     d_state=d_state,
                     d_conv=d_conv,
                     expand=expand,
@@ -345,9 +357,9 @@ class HybridTokenEncoder(nn.Module):
                     dim=dim,
                     use_attention=True,
                     num_heads=num_heads,
-                    mlp_ratio=mlp_ratio,
+                    mlp_ratio=attn_mlp_ratio,
                     drop_path=drop_path_rates[num_mamba_blocks + block_index],
-                    layer_scale=layer_scale,
+                    layer_scale=attn_layer_scale,
                 )
             )
 
