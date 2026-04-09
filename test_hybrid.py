@@ -30,7 +30,7 @@ parser.add_argument('--first_skip', action='store_true', default=False)
 parser.add_argument('--num_mamba_blocks', default=1, type=int)
 parser.add_argument('--num_attn_blocks', default=1, type=int)
 parser.add_argument('--drop_path', default=0.1, type=float)
-parser.add_argument('--hybrid_mlp_ratio', default=4.0, type=float)
+parser.add_argument('--hybrid_mlp_ratio', default=8.0, type=float)
 parser.add_argument('--save_masks', action='store_true', default=False)
 
 if __name__ == '__main__':

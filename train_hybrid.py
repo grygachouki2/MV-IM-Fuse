@@ -75,7 +75,7 @@ parser.add_argument('--matmul_precision', default='high', choices=['highest', 'h
 parser.add_argument('--num_mamba_blocks', default=1, type=int, help='MV-Mixer block 数量')
 parser.add_argument('--num_attn_blocks', default=1, type=int, help='Attention block 数量')
 parser.add_argument('--drop_path', default=0.1, type=float, help='Drop path rate')
-parser.add_argument('--hybrid_mlp_ratio', default=4.0, type=float, help='Hybrid Encoder MLP ratio')
+parser.add_argument('--hybrid_mlp_ratio', default=8.0, type=float, help='Hybrid Encoder MLP ratio; use 8.0 to fully reuse the pretrained IM-Fuse FFN weights')
 parser.add_argument('--hybrid_layer_scale', default=0.0, type=float, help='Hybrid Encoder residual layer scale; set <= 0 to disable')
 
 # 三阶段训练
@@ -569,6 +569,15 @@ def main():
     elif args.pretrained_imfuse is not None and stage == 1:
         # Stage 1: 从 IM-Fuse 预训练加载
         load_imfuse_pretrained(model, args.pretrained_imfuse)
+
+    if args.pretrained_imfuse is not None and stage in (1, 2) and args.num_attn_blocks > 0 and args.hybrid_mlp_ratio != 8.0:
+        warning_msg = (
+            'hybrid_mlp_ratio != 8.0 prevents full FFN weight transfer from the pretrained '
+            'IM-Fuse transformer. In Stage 1/2 this leaves part of the frozen hybrid attention '
+            'block randomly initialized, which can stall optimization.'
+        )
+        print(f'Warning: {warning_msg}', flush=True)
+        logging.warning(warning_msg)
 
     model = torch.nn.DataParallel(model).cuda()
 

@@ -435,7 +435,7 @@ class IMFuseHybrid(nn.Module):
         num_mamba_blocks: MV-Mixer block 数量 (默认 1)
         num_attn_blocks: Self-Attention block 数量 (默认 1)  
         drop_path: DropPath 概率 (默认 0.1)
-        hybrid_mlp_ratio: Hybrid Encoder MLP 扩展比 (默认 4.0)
+        hybrid_mlp_ratio: Hybrid Encoder MLP 扩展比 (默认 8.0，可完整复用 IM-Fuse FFN 权重)
     """
 
     def __init__(
@@ -447,7 +447,7 @@ class IMFuseHybrid(nn.Module):
         num_mamba_blocks=1,
         num_attn_blocks=1,
         drop_path=0.1,
-        hybrid_mlp_ratio=4.0,
+        hybrid_mlp_ratio=8.0,
         hybrid_layer_scale=0.0,
     ):
         super(IMFuseHybrid, self).__init__()
