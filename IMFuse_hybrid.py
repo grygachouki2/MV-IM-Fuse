@@ -15,6 +15,7 @@ from mamba_ssm import Mamba
 from torch.cuda.amp import autocast
 from utils.initialization import InitWeights_He
 from mambavision_mixer import HybridTokenEncoder
+from utils.perf import sdpa_attention
 
 # ============ 全局参数 (与 IMFuse.py 完全一致) ============
 basic_dims = 8
@@ -303,10 +304,14 @@ class SelfAttention(nn.Module):
             .permute(2, 0, 3, 1, 4)
         )
         q, k, v = qkv[0], qkv[1], qkv[2]
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = sdpa_attention(
+            q,
+            k,
+            v,
+            attn_drop_p=self.attn_drop.p,
+            training=self.training,
+            scale=self.scale,
+        ).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x

@@ -18,6 +18,12 @@ import torch
 import torch.optim
 from utils.random_seed import setup_seed
 from utils.checkpoint import load_local_checkpoint
+from utils.perf import (
+    configure_torch_runtime,
+    create_grad_scaler,
+    get_autocast_context,
+    get_effective_amp_dtype,
+)
 from utils.tensorboard import (
     add_tensorboard_args,
     compute_global_norm,
@@ -58,6 +64,12 @@ parser.add_argument('--debug', action='store_true', default=False)
 parser.add_argument('--interleaved_tokenization', action='store_true', default=False)
 parser.add_argument('--mamba_skip', action='store_true', default=False)
 parser.add_argument('--first_skip', action='store_true', default=False)
+parser.add_argument('--amp', action='store_true', default=False, help='Enable automatic mixed precision training')
+parser.add_argument('--amp_dtype', default='fp16', choices=['fp16', 'bf16'], help='AMP compute dtype')
+parser.add_argument('--flash_attention', action=argparse.BooleanOptionalAction, default=True, help='Allow Flash Attention kernels through PyTorch SDPA when available')
+parser.add_argument('--tf32', action=argparse.BooleanOptionalAction, default=True, help='Enable TF32 tensor core math on supported GPUs')
+parser.add_argument('--cudnn_benchmark', action=argparse.BooleanOptionalAction, default=True, help='Enable cuDNN benchmark for fixed input shapes')
+parser.add_argument('--matmul_precision', default='high', choices=['highest', 'high', 'medium'], help='Float32 matmul precision hint for PyTorch')
 
 # 模型配置
 parser.add_argument('--num_mamba_blocks', default=1, type=int, help='MV-Mixer block 数量')
@@ -405,6 +417,27 @@ def main():
         pad = ' '.join(['' for _ in range(25 - len(k))])
         print(f"{k}:{pad} {v}", flush=True)
 
+    amp_dtype, amp_dtype_name = get_effective_amp_dtype(args.amp_dtype)
+    amp_enabled = args.amp and torch.cuda.is_available()
+    if args.amp and amp_dtype_name != args.amp_dtype:
+        logging.warning('Requested bf16 AMP but current GPU does not support bf16, falling back to fp16.')
+    runtime_config = configure_torch_runtime(
+        enable_tf32=args.tf32,
+        cudnn_benchmark=args.cudnn_benchmark,
+        matmul_precision=args.matmul_precision,
+        flash_attention=args.flash_attention,
+    )
+    scaler = create_grad_scaler(amp_enabled, amp_dtype)
+    precision_msg = (
+        f"Precision config: amp={amp_enabled}, amp_dtype={amp_dtype_name}, "
+        f"grad_scaler={scaler.is_enabled()}, flash_sdp={runtime_config.get('flash_sdp_enabled')}, "
+        f"mem_efficient_sdp={runtime_config.get('mem_efficient_sdp_enabled')}, "
+        f"tf32={runtime_config.get('matmul_allow_tf32', runtime_config.get('cudnn_allow_tf32'))}, "
+        f"cudnn_benchmark={runtime_config.get('cudnn_benchmark')}"
+    )
+    print(precision_msg, flush=True)
+    logging.info(precision_msg)
+
     # Stage config
     stage = args.stage
     stage_epochs = getattr(args, f'stage{stage}_epochs')
@@ -438,6 +471,10 @@ def main():
             "num_mamba_blocks": args.num_mamba_blocks,
             "num_attn_blocks": args.num_attn_blocks,
             "drop_path": args.drop_path,
+            "amp": amp_enabled,
+            "amp_dtype": amp_dtype_name,
+            "flash_attention": args.flash_attention,
+            "tf32": args.tf32,
         },
     )
 
@@ -553,6 +590,13 @@ def main():
             print("Optimizer state restored")
         except Exception as e:
             print(f"Warning: Could not restore optimizer state: {e}")
+        scaler_state = checkpoint.get('scaler_dict')
+        if scaler_state:
+            try:
+                scaler.load_state_dict(scaler_state)
+                print("GradScaler state restored")
+            except Exception as e:
+                print(f"Warning: Could not restore GradScaler state: {e}")
 
     # ============ 训练循环 ============
     start = time.time()
@@ -573,6 +617,9 @@ def main():
             f'stage{stage}/meta/start_epoch': start_epoch,
             f'stage{stage}/meta/trainable_parameters': total_trainable,
             f'stage{stage}/meta/frozen_parameters': total_frozen,
+            f'stage{stage}/meta/amp_enabled': int(amp_enabled),
+            f'stage{stage}/meta/amp_fp16_scaler_enabled': int(scaler.is_enabled()),
+            f'stage{stage}/meta/flash_attention_requested': int(args.flash_attention),
         }
         log_scalars(writer, meta_scalars, 0)
         for group_index, param_group in enumerate(param_groups):
@@ -609,50 +656,57 @@ def main():
             target = target.cuda(non_blocking=True)
             mask = mask.cuda(non_blocking=True)
 
-            fuse_pred, sep_preds, prm_preds = model(x, mask)
+            optimizer.zero_grad(set_to_none=True)
+            should_log_step = writer is not None and (step == 1 or step % args.tb_log_interval == 0)
 
-            # Fuse loss
-            fuse_cross_loss = criterions.softmax_weighted_loss(fuse_pred, target, num_cls=num_cls)
-            fuse_dice_loss = criterions.dice_loss(fuse_pred, target, num_cls=num_cls)
-            fuse_loss = fuse_cross_loss + fuse_dice_loss
-            fuse_cross_loss_epoch += fuse_cross_loss
-            fuse_dice_loss_epoch += fuse_dice_loss
+            with get_autocast_context(amp_enabled, amp_dtype):
+                fuse_pred, sep_preds, prm_preds = model(x, mask)
 
-            # Sep loss
-            sep_cross_loss = torch.zeros(1).cuda().float()
-            sep_dice_loss = torch.zeros(1).cuda().float()
-            for sep_pred in sep_preds:
-                sep_cross_loss += criterions.softmax_weighted_loss(sep_pred, target, num_cls=num_cls)
-                sep_dice_loss += criterions.dice_loss(sep_pred, target, num_cls=num_cls)
-            sep_loss = sep_cross_loss + sep_dice_loss
-            sep_cross_loss_epoch += sep_cross_loss
-            sep_dice_loss_epoch += sep_dice_loss
+                # Fuse loss
+                fuse_cross_loss = criterions.softmax_weighted_loss(fuse_pred, target, num_cls=num_cls)
+                fuse_dice_loss = criterions.dice_loss(fuse_pred, target, num_cls=num_cls)
+                fuse_loss = fuse_cross_loss + fuse_dice_loss
 
-            # Pyramid loss
-            prm_cross_loss = torch.zeros(1).cuda().float()
-            prm_dice_loss = torch.zeros(1).cuda().float()
-            for prm_pred in prm_preds:
-                prm_cross_loss += criterions.softmax_weighted_loss(prm_pred, target, num_cls=num_cls)
-                prm_dice_loss += criterions.dice_loss(prm_pred, target, num_cls=num_cls)
-            prm_loss = prm_cross_loss + prm_dice_loss
-            prm_cross_loss_epoch += prm_cross_loss
-            prm_dice_loss_epoch += prm_dice_loss
+                # Sep loss
+                sep_cross_loss = fuse_cross_loss.new_zeros(())
+                sep_dice_loss = fuse_dice_loss.new_zeros(())
+                for sep_pred in sep_preds:
+                    sep_cross_loss += criterions.softmax_weighted_loss(sep_pred, target, num_cls=num_cls)
+                    sep_dice_loss += criterions.dice_loss(sep_pred, target, num_cls=num_cls)
+                sep_loss = sep_cross_loss + sep_dice_loss
 
-            # Total loss
-            if epoch < args.region_fusion_start_epoch:
-                loss = fuse_loss * 0.0 + sep_loss + prm_loss
-            else:
-                loss = fuse_loss + sep_loss + prm_loss
-            loss_epoch += loss
+                # Pyramid loss
+                prm_cross_loss = fuse_cross_loss.new_zeros(())
+                prm_dice_loss = fuse_dice_loss.new_zeros(())
+                for prm_pred in prm_preds:
+                    prm_cross_loss += criterions.softmax_weighted_loss(prm_pred, target, num_cls=num_cls)
+                    prm_dice_loss += criterions.dice_loss(prm_pred, target, num_cls=num_cls)
+                prm_loss = prm_cross_loss + prm_dice_loss
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                # Total loss
+                if epoch < args.region_fusion_start_epoch:
+                    loss = fuse_loss * 0.0 + sep_loss + prm_loss
+                else:
+                    loss = fuse_loss + sep_loss + prm_loss
+
+            scaler.scale(loss).backward()
+            if should_log_step and scaler.is_enabled():
+                scaler.unscale_(optimizer)
+            grad_norm = compute_global_norm(model.parameters(), use_grad=True) if should_log_step else None
+            scaler.step(optimizer)
+            scaler.update()
+
+            fuse_cross_loss_epoch += fuse_cross_loss.item()
+            fuse_dice_loss_epoch += fuse_dice_loss.item()
+            sep_cross_loss_epoch += sep_cross_loss.item()
+            sep_dice_loss_epoch += sep_dice_loss.item()
+            prm_cross_loss_epoch += prm_cross_loss.item()
+            prm_dice_loss_epoch += prm_dice_loss.item()
+            loss_epoch += loss.item()
 
             batch_time = time.time() - iter_start
 
-            if writer is not None and (step == 1 or step % args.tb_log_interval == 0):
-                grad_norm = compute_global_norm(model.parameters(), use_grad=True)
+            if should_log_step:
                 log_scalars(
                     writer,
                     {
@@ -695,25 +749,25 @@ def main():
         # Log metrics
         wandb.log({
             f"stage{stage}/epoch": epoch,
-            f"stage{stage}/loss": loss_epoch.cpu().detach().item() / iter_per_epoch,
-            f"stage{stage}/fusecross": fuse_cross_loss_epoch.cpu().detach().item() / iter_per_epoch,
-            f"stage{stage}/fusedice": fuse_dice_loss_epoch.cpu().detach().item() / iter_per_epoch,
-            f"stage{stage}/sepcross": sep_cross_loss_epoch.cpu().detach().item() / iter_per_epoch,
-            f"stage{stage}/sepdice": sep_dice_loss_epoch.cpu().detach().item() / iter_per_epoch,
-            f"stage{stage}/prmcross": prm_cross_loss_epoch.cpu().detach().item() / iter_per_epoch,
-            f"stage{stage}/prmdice": prm_dice_loss_epoch.cpu().detach().item() / iter_per_epoch,
+            f"stage{stage}/loss": loss_epoch / iter_per_epoch,
+            f"stage{stage}/fusecross": fuse_cross_loss_epoch / iter_per_epoch,
+            f"stage{stage}/fusedice": fuse_dice_loss_epoch / iter_per_epoch,
+            f"stage{stage}/sepcross": sep_cross_loss_epoch / iter_per_epoch,
+            f"stage{stage}/sepdice": sep_dice_loss_epoch / iter_per_epoch,
+            f"stage{stage}/prmcross": prm_cross_loss_epoch / iter_per_epoch,
+            f"stage{stage}/prmdice": prm_dice_loss_epoch / iter_per_epoch,
             f"stage{stage}/learning_rate": step_lr,
         })
 
         if writer is not None:
             epoch_scalars = {
-                f'stage{stage}/train_epoch/loss': loss_epoch.cpu().detach().item() / iter_per_epoch,
-                f'stage{stage}/train_epoch/fuse_cross_loss': fuse_cross_loss_epoch.cpu().detach().item() / iter_per_epoch,
-                f'stage{stage}/train_epoch/fuse_dice_loss': fuse_dice_loss_epoch.cpu().detach().item() / iter_per_epoch,
-                f'stage{stage}/train_epoch/sep_cross_loss': sep_cross_loss_epoch.cpu().detach().item() / iter_per_epoch,
-                f'stage{stage}/train_epoch/sep_dice_loss': sep_dice_loss_epoch.cpu().detach().item() / iter_per_epoch,
-                f'stage{stage}/train_epoch/prm_cross_loss': prm_cross_loss_epoch.cpu().detach().item() / iter_per_epoch,
-                f'stage{stage}/train_epoch/prm_dice_loss': prm_dice_loss_epoch.cpu().detach().item() / iter_per_epoch,
+                f'stage{stage}/train_epoch/loss': loss_epoch / iter_per_epoch,
+                f'stage{stage}/train_epoch/fuse_cross_loss': fuse_cross_loss_epoch / iter_per_epoch,
+                f'stage{stage}/train_epoch/fuse_dice_loss': fuse_dice_loss_epoch / iter_per_epoch,
+                f'stage{stage}/train_epoch/sep_cross_loss': sep_cross_loss_epoch / iter_per_epoch,
+                f'stage{stage}/train_epoch/sep_dice_loss': sep_dice_loss_epoch / iter_per_epoch,
+                f'stage{stage}/train_epoch/prm_cross_loss': prm_cross_loss_epoch / iter_per_epoch,
+                f'stage{stage}/train_epoch/prm_dice_loss': prm_dice_loss_epoch / iter_per_epoch,
                 f'stage{stage}/train_epoch/learning_rate': step_lr,
                 f'stage{stage}/time/epoch_seconds': time.time() - b,
             }
@@ -738,15 +792,17 @@ def main():
             'state_dict': model.state_dict(),
             'optim_dict': optimizer.state_dict(),
             'val_Dice_best': val_Dice_best,
+            'scaler_dict': scaler.state_dict(),
         }, file_name)
 
         # Validation
         if (epoch + 1) in val_check or args.debug:
             print(f'Stage {stage}, Epoch {epoch + 1}: validating ...')
             with torch.no_grad():
-                dice_score, seg_loss = test_softmax(
-                    val_loader, model, dataname=args.dataname
-                )
+                with get_autocast_context(amp_enabled, amp_dtype):
+                    dice_score, seg_loss = test_softmax(
+                        val_loader, model, dataname=args.dataname
+                    )
             val_WT, val_TC, val_ET, val_ETpp = dice_score
             logging.info(
                 'Validate Stage {} Epoch = {}, WT = {:.2}, TC = {:.2}, ET = {:.2}, ETpp = {:.2}, loss = {:.2}'.format(
@@ -786,14 +842,16 @@ def main():
                     'state_dict': model.state_dict(),
                     'optim_dict': optimizer.state_dict(),
                     'val_Dice_best': val_Dice_best,
+                    'scaler_dict': scaler.state_dict(),
                 }, file_name)
 
             # Testing
             print('testing ...')
             with torch.no_grad():
-                dice_score, seg_loss = test_softmax(
-                    test_loader, model, dataname=args.dataname
-                )
+                with get_autocast_context(amp_enabled, amp_dtype):
+                    dice_score, seg_loss = test_softmax(
+                        test_loader, model, dataname=args.dataname
+                    )
             test_WT, test_TC, test_ET, test_ETpp = dice_score
             logging.info(
                 'Testing Stage {} Epoch = {}, WT = {:.2}, TC = {:.2}, ET = {:.2}, ETpp = {:.2}'.format(
@@ -832,6 +890,7 @@ def main():
         'state_dict': model.state_dict(),
         'optim_dict': optimizer.state_dict(),
         'val_Dice_best': val_Dice_best,
+        'scaler_dict': scaler.state_dict(),
     }, file_name)
 
     msg = 'Stage {} completed. Total time: {:.4f} hours'.format(stage, (time.time() - start) / 3600)

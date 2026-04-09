@@ -17,6 +17,7 @@ from timm.layers import DropPath
 from mamba_ssm.ops.selective_scan_interface import selective_scan_fn
 from einops import rearrange, repeat
 from torch.cuda.amp import autocast
+from utils.perf import sdpa_attention
 
 
 class MambaVisionMixer3D(nn.Module):
@@ -210,11 +211,14 @@ class SelfAttention3D(nn.Module):
         )
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = sdpa_attention(
+            q,
+            k,
+            v,
+            attn_drop_p=self.attn_drop.p,
+            training=self.training,
+            scale=self.scale,
+        ).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x

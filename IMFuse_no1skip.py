@@ -7,6 +7,7 @@ from layers import general_conv3d_prenorm, fusion_prenorm
 from mamba_ssm import Mamba
 from torch.cuda.amp import autocast
 from utils.initialization import InitWeights_He
+from utils.perf import sdpa_attention
 
 basic_dims = 8 #5 for SS
 transformer_basic_dims = 512
@@ -300,11 +301,14 @@ class SelfAttention(nn.Module):
             qkv[2],
         )  # make torchscript happy (cannot use tensor as tuple)
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = sdpa_attention(
+            q,
+            k,
+            v,
+            attn_drop_p=self.attn_drop.p,
+            training=self.training,
+            scale=self.scale,
+        ).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
