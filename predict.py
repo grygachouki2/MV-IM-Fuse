@@ -248,16 +248,17 @@ def test_softmax(
                 nib.save(nib.Nifti1Image(pred_np, affine), out_path)
 
             # write scores
-            case_scores = scores_evaluation[k][0:3]
-            avg_score = float(np.mean(case_scores))
+            if save_dir is not None:
+                case_scores = scores_evaluation[k][0:3]
+                avg_score = float(np.mean(case_scores))
 
-            txt_path = os.path.join(save_dir, f"scores_{index}.txt")
-            with open(txt_path, "a") as f:
-                f.write(
-                    f"{out_name} "                                        
-                    + " ".join([f"{s:.4f}" for s in case_scores]) + " "    
-                    + f"{avg_score:.4f}\n"                                 
-                )
+                txt_path = os.path.join(save_dir, f"scores_{index}.txt")
+                with open(txt_path, "a") as f:
+                    f.write(
+                        f"{out_name} "
+                        + " ".join([f"{s:.4f}" for s in case_scores]) + " "
+                        + f"{avg_score:.4f}\n"
+                    )
         
 
     
